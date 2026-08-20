@@ -614,6 +614,7 @@ export function registerProfileRoutes(router: Router, deps: Dependencies): void 
    *               addressing: { type: string, enum: [file, base], description: "Honor file addresses ('file') or relocate to the region base ('base'). Default 'base'." }
    *               format: { type: string, enum: [bin, ihex], description: 'Override format detection.' }
    *               filename: { type: string, description: 'Original filename (aids format detection).' }
+   *               writable: { type: boolean, description: 'EEPROM mode: CPU writes to this region stick for the life of a running instance instead of being silently discarded like real EPROM. Default false.' }
    *     responses:
    *       200:
    *         description: Burned — the new profile version + a burn summary
@@ -632,6 +633,7 @@ export function registerProfileRoutes(router: Router, deps: Dependencies): void 
         addressing: (body.addressing as Addressing) ?? 'base',
         format: body.format as ImageFormat | undefined,
         filename: body.filename as string | undefined,
+        writable: !!body.writable,
       });
       res.json(out);
     } catch (error) {

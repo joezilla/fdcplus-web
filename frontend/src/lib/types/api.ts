@@ -187,6 +187,9 @@ export interface ProfileMemoryRegion {
   size: number;
   kind: 'ram' | 'rom' | 'mmio';
   image?: string; // base64
+  /** EEPROM mode: CPU writes to this ('rom') region stick for the life of a
+   *  running instance instead of being silently discarded. */
+  writable?: boolean;
 }
 
 export interface ProfileCardInstance {

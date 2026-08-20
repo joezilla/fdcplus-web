@@ -181,6 +181,12 @@
     return { base: num('base'), size: num('size') };
   }
 
+  /** The burned override region for a card, if any (`<cardId>/rom`) — used to
+   *  preselect the writable toggle when re-burning. */
+  function burnedRegionFor(cardId: string) {
+    return profile?.memory.find((m) => m.id === `${cardId}/rom` && m.kind === 'rom' && !!m.image);
+  }
+
   function openBurn(cardId: string) {
     if (dirty) {
       showToast('Save your backplane changes before burning an EPROM', 'error');
@@ -554,6 +560,7 @@
     profileId={profile.id}
     cardId={burnCardId}
     region={burnRegionFor(burnCardId)}
+    initialWritable={!!burnedRegionFor(burnCardId)?.writable}
     onClose={() => (burnCardId = null)}
     {onBurned}
   />

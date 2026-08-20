@@ -9,14 +9,19 @@
     cardId: string;
     /** EPROM window geometry, for a pre-burn hint (optional). */
     region?: { base: number; size: number };
+    /** Whether the card's current burn (if any) is already EEPROM-writable —
+     *  preselects the toggle when re-burning. */
+    initialWritable?: boolean;
     onClose: () => void;
     /** Called with the new profile version id after a successful burn. */
     onBurned: (newProfileId: string) => void;
   }
-  let { profileId, cardId, region, onClose, onBurned }: Props = $props();
+  let { profileId, cardId, region, initialWritable = false, onClose, onBurned }: Props = $props();
 
   let file = $state<File | null>(null);
   let addressing = $state<'base' | 'file'>('base');
+  // svelte-ignore state_referenced_locally -- one-time seed; modal is remounted per open
+  let writable = $state(initialWritable);
   let busy = $state(false);
 
   const hex = (n: number) => `0x${n.toString(16).toUpperCase().padStart(4, '0')}`;
@@ -39,7 +44,7 @@
     try {
       busy = true;
       const image = toBase64(new Uint8Array(await file.arrayBuffer()));
-      const res = await api.burnEprom(profileId, cardId, { image, addressing, filename: file.name });
+      const res = await api.burnEprom(profileId, cardId, { image, addressing, filename: file.name, writable });
       showToast(res.summary, 'success');
       onBurned(res.profile.id);
     } catch (err) {
@@ -90,6 +95,13 @@
         <p class="warn">A raw binary has no addresses — it loads from the base regardless.</p>
       {/if}
     </fieldset>
+
+    <label class="eeprom-toggle">
+      <input type="checkbox" bind:checked={writable} disabled={busy} />
+      <span class="mode-t">Writable (EEPROM mode)
+        <span class="mode-d">— CPU writes to this region stick while the machine runs; it reverts to this image on the next restart (writes aren't saved back to the profile).</span>
+      </span>
+    </label>
   </div>
 
   <footer class="foot">
@@ -206,6 +218,19 @@
     margin: 0;
     color: var(--warning, var(--fg-3));
     font-size: 12px;
+  }
+  .eeprom-toggle {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    cursor: pointer;
+    font-size: 13px;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-1);
+    border-radius: var(--radius-md);
+  }
+  .eeprom-toggle input {
+    margin-top: 2px;
   }
   .foot {
     display: flex;

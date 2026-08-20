@@ -25,6 +25,12 @@ export interface ProfileMemoryRegion {
   size: number;
   kind: 'ram' | 'rom' | 'mmio';
   image?: string; // base64-encoded ROM contents
+  /** EEPROM mode (Story 5.2 follow-on): a `kind: 'rom'` region marked writable
+   *  rehydrates as real RAM (see {@link toMachineProfile}), so CPU writes stick
+   *  for the life of the running instance instead of being silently discarded
+   *  like real EPROM. The region stays a ROM at rest — burn/erase, digest, and
+   *  the UI still treat it as an EPROM card's image. Ignored on `kind: 'ram'`. */
+  writable?: boolean;
 }
 
 /** The content-addressed body of a Profile (everything the digest covers). */
@@ -71,12 +77,16 @@ const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,63}$/;
 function digestOf(content: ProfileContent): string {
   const members: MemberRef[] = [];
   const memory = content.memory.map((m) => {
+    // `writable` only enters the hash when set — an untouched region hashes
+    // identically to before this flag existed, so pre-existing profiles keep
+    // their digest.
+    const kindMeta = m.writable ? { kind: m.kind, writable: true } : { kind: m.kind };
     if (m.image) {
       const bytes = new Uint8Array(Buffer.from(m.image, 'base64'));
       members.push(memberFromBytes(`mem/${m.id}.bin`, bytes));
-      return { id: m.id, base: m.base, size: m.size, kind: m.kind, image: `mem/${m.id}.bin` };
+      return { id: m.id, base: m.base, size: m.size, ...kindMeta, image: `mem/${m.id}.bin` };
     }
-    return { id: m.id, base: m.base, size: m.size, kind: m.kind };
+    return { id: m.id, base: m.base, size: m.size, ...kindMeta };
   });
   return primitiveDigest({
     kind: 'profile',
@@ -111,7 +121,15 @@ function toDoc(rec: MachineProfileRecord): ProfileDoc {
   };
 }
 
-/** Rehydrate a stored Profile into a runnable MachineProfile (base64 → Uint8Array). */
+/** Rehydrate a stored Profile into a runnable MachineProfile (base64 → Uint8Array).
+ *
+ * A `kind: 'rom'` region marked `writable` (EEPROM mode) is handed to 8sim as
+ * `kind: 'ram'` preloaded with the burned bytes — `buildMachine` attaches a
+ * real RAM device for that kind, so CPU writes actually stick for the life of
+ * the running instance instead of hitting 8sim's ROM device, which silently
+ * discards writes. The stored Profile itself is untouched: it still records
+ * `kind: 'rom'` at rest, so burn/erase/digest/UI keep treating it as an EPROM.
+ */
 export function toMachineProfile(content: ProfileContent): MachineProfile {
   return {
     cpuKind: content.cpuKind,
@@ -122,7 +140,7 @@ export function toMachineProfile(content: ProfileContent): MachineProfile {
       id: m.id,
       base: m.base,
       size: m.size,
-      kind: m.kind,
+      kind: m.kind === 'rom' && m.writable ? 'ram' : m.kind,
       ...(m.image ? { image: new Uint8Array(Buffer.from(m.image, 'base64')) } : {}),
     })),
     cards: content.cards.map((c) => ({ id: c.id, ref: c.ref, config: c.config })),

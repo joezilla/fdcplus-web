@@ -117,6 +117,48 @@ describe('burnEprom', () => {
       burnEprom(deps, p.id, 'nope', { bytes: new Uint8Array([0]), addressing: 'base' }),
     ).rejects.toMatchObject({ statusCode: 404 });
   });
+
+  test('writable: true burns an EEPROM whose CPU writes stick (resolves as RAM, not ROM)', async () => {
+    const deps = await makeDeps();
+    const p = await makeProfile(deps);
+    const out = await burnEprom(deps, p.id, 'eprom0', {
+      bytes: new Uint8Array([0x76]),
+      addressing: 'base',
+      writable: true,
+    });
+
+    expect(out.writable).toBe(true);
+    const region = out.profile.memory.find((m) => m.id === 'eprom0/rom')!;
+    // At rest the Profile still records it as a ROM (EPROM card, burn/erase apply).
+    expect(region).toMatchObject({ kind: 'rom', writable: true });
+
+    // But the runnable MachineSpec sees real RAM preloaded with the burned byte,
+    // so 8sim attaches a writable device instead of a read-only one.
+    const { spec } = await resolveProfile(deps, toMachineProfile(out.profile));
+    const romRegions = spec.memory.filter((m) => m.id === 'eprom0/rom');
+    expect(romRegions).toHaveLength(1);
+    expect(romRegions[0].kind).toBe('ram');
+    expect(romRegions[0].image?.[0]).toBe(0x76);
+  });
+
+  test('omitting writable keeps the region a plain read-only ROM and does not perturb the digest', async () => {
+    const deps = await makeDeps();
+    const p = await makeProfile(deps);
+    const bytes = new Uint8Array([0x76]);
+
+    const implicit = await burnEprom(deps, p.id, 'eprom0', { bytes, addressing: 'base' });
+    const explicitFalse = await burnEprom(deps, implicit.profile.id, 'eprom0', {
+      bytes,
+      addressing: 'base',
+      writable: false,
+    });
+
+    // Re-burning identical bytes with writable omitted vs. explicitly false is a
+    // no-op (unchanged content) — updateProfile returns the same version.
+    expect(explicitFalse.profile.digest).toBe(implicit.profile.digest);
+    const { spec } = await resolveProfile(deps, toMachineProfile(implicit.profile));
+    expect(spec.memory.find((m) => m.id === 'eprom0/rom')?.kind).toBe('rom');
+  });
 });
 
 describe('eraseEprom', () => {

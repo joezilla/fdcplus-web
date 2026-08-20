@@ -2856,6 +2856,10 @@
                   "filename": {
                     "type": "string",
                     "description": "Original filename (aids format detection)."
+                  },
+                  "writable": {
+                    "type": "boolean",
+                    "description": "EEPROM mode: CPU writes to this region stick for the life of a running instance instead of being silently discarded like real EPROM. Default false."
                   }
                 }
               }
