@@ -539,12 +539,24 @@ export const api = {
   burnEprom: (
     id: string,
     cardId: string,
-    body: { image: string; addressing: 'file' | 'base'; format?: 'bin' | 'ihex'; filename?: string },
+    body: {
+      image: string;
+      addressing: 'file' | 'base';
+      format?: 'bin' | 'ihex';
+      filename?: string;
+      /** EEPROM mode: CPU writes stick for the life of a running instance. */
+      writable?: boolean;
+    },
   ) =>
-    request<{ profile: MachineProfile; summary: string; region: { id: string; base: number; size: number } }>(
-      `/api/profiles/${encodeURIComponent(id)}/cards/${encodeURIComponent(cardId)}/burn`,
-      { method: 'POST', body: JSON.stringify(body) },
-    ),
+    request<{
+      profile: MachineProfile;
+      summary: string;
+      region: { id: string; base: number; size: number };
+      writable: boolean;
+    }>(`/api/profiles/${encodeURIComponent(id)}/cards/${encodeURIComponent(cardId)}/burn`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   eraseEprom: (id: string, cardId: string) =>
     request<{ profile: MachineProfile; erased: boolean }>(
       `/api/profiles/${encodeURIComponent(id)}/cards/${encodeURIComponent(cardId)}/rom`,

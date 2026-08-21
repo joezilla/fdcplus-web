@@ -2270,7 +2270,10 @@ export function createMcpServer(deps: Dependencies): McpServer {
     'Burn a ROM image into an EPROM card instance of a Machine Profile (FR-6). Pass base64 `image` ' +
       '(a raw .bin or an Intel HEX file) and `addressing`: "file" honors the file\'s addresses, "base" ' +
       'relocates them to the EPROM base. Persists a NEW Profile version with the burned bytes ' +
-      'content-addressed; returns a burn summary. Rejects an image that overflows the EPROM window.',
+      'content-addressed; returns a burn summary. Rejects an image that overflows the EPROM window. ' +
+      'Set `writable: true` for EEPROM mode: CPU writes to this region stick for the life of a running ' +
+      'instance instead of being silently discarded like real EPROM; the region still reverts to the ' +
+      'last-burned bytes on the next instance start (writes are not written back to the Profile).',
     {
       id: z.string().describe('Profile Identity: name@version'),
       cardId: z.string().describe('EPROM card instance id within the profile'),
@@ -2278,14 +2281,16 @@ export function createMcpServer(deps: Dependencies): McpServer {
       addressing: z.enum(['file', 'base']).optional().describe("'file' honors file addresses; 'base' relocates to the region base (default)"),
       format: z.enum(['bin', 'ihex']).optional().describe('Override format detection'),
       filename: z.string().optional().describe('Original filename (aids format detection)'),
+      writable: z.boolean().optional().describe('EEPROM mode: allow CPU writes to stick for the running instance (default false)'),
     },
-    async ({ id, cardId, image, addressing, format, filename }) => {
+    async ({ id, cardId, image, addressing, format, filename, writable }) => {
       try {
         const out = await burnEprom(deps, id, cardId, {
           bytes: new Uint8Array(Buffer.from(image, 'base64')),
           addressing: addressing ?? 'base',
           format,
           filename,
+          writable,
         });
         return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
       } catch (error) {

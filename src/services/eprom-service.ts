@@ -27,6 +27,10 @@ export interface BurnInput {
   /** Override format detection (else sniffed from bytes/filename). */
   format?: ImageFormat;
   filename?: string;
+  /** EEPROM mode: CPU writes to this region stick for the life of a running
+   *  instance instead of being silently discarded like real EPROM. Defaults
+   *  to false (plain read-only EPROM), preserving prior burn behavior. */
+  writable?: boolean;
 }
 
 export interface BurnOutcome {
@@ -38,6 +42,7 @@ export interface BurnOutcome {
   highAddr: number;
   format: ImageFormat;
   addressing: Addressing;
+  writable: boolean;
 }
 
 /** Resolve an EPROM card instance to its ROM region geometry (base/size/id). */
@@ -84,12 +89,14 @@ export async function burnEprom(
     throw err;
   }
 
+  const writable = !!input.writable;
   const burned: ProfileMemoryRegion = {
     id: nsId,
     base,
     size,
     kind: 'rom',
     image: Buffer.from(result.image).toString('base64'),
+    ...(writable ? { writable: true } : {}),
   };
   const memory = upsertRegion(profile.memory, burned);
   const updated = await updateProfile(deps, profileId, { memory });
@@ -103,6 +110,7 @@ export async function burnEprom(
     highAddr: result.highAddr,
     format: result.format,
     addressing: result.addressing,
+    writable,
   };
 }
 

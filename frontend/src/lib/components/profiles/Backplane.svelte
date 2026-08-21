@@ -190,7 +190,7 @@
                 <span class="eprom-state" class:burned={!!burn}>
                   <Icon name="memory" size={16} />
                   {#if burn}
-                    ROM burned · {burn.size >= 1024 ? `${(burn.size / 1024).toFixed(burn.size % 1024 ? 1 : 0)} KB` : `${burn.size} B`}
+                    {burn.writable ? 'EEPROM writable' : 'ROM burned'} · {burn.size >= 1024 ? `${(burn.size / 1024).toFixed(burn.size % 1024 ? 1 : 0)} KB` : `${burn.size} B`}
                     @ 0x{burn.base.toString(16).toUpperCase()}
                   {:else}
                     EPROM empty
