@@ -13,6 +13,9 @@ import { MachineProfile } from './resolver';
 import { getPreset, listPresets, MachinePreset } from './presets';
 import { resolveProfileRef } from './profile-service';
 import { getClientMountRegistry } from '../client-mount-registry';
+import { ConsoleInput, encodeConsoleInput, LineEnding } from './console-input';
+import { ConsoleWaitAdapter } from './console-hub';
+import { compileUntil, waitForTerminalOutput } from '../mcp-terminal-wait';
 import * as path from 'path';
 
 /** A disk bound to an instance (an operator mount) + its per-instance dirty state. */
@@ -173,8 +176,80 @@ export async function destroyInstance(deps: Dependencies, id: string): Promise<v
   return manager(deps).destroy(id);
 }
 
-export function writeInstanceConsole(deps: Dependencies, id: string, input: string): void {
-  manager(deps).writeConsole(id, input);
+export function writeInstanceConsole(
+  deps: Dependencies,
+  id: string,
+  input: string | ConsoleInput,
+): number {
+  // A bare string keeps the original contract: raw bytes, no line-ending help.
+  const payload: ConsoleInput = typeof input === 'string' ? { text: input, lineEnding: 'raw' } : input;
+  const buf = encodeConsoleInput(payload, 'raw');
+  manager(deps).writeConsole(id, buf);
+  return buf.length;
+}
+
+/** Send-and-wait options for `runInstanceCommand` — the console twin of the
+ * serial `run_terminal_command`. */
+export interface RunInstanceCommandOptions extends ConsoleInput {
+  /** Hard timeout in ms (safety cap). Default 5000. */
+  waitMs?: number;
+  /** Return once no new bytes arrive for this many ms. Default 200. */
+  idleMs?: number;
+  /** Return as soon as a CP/M / MBASIC prompt appears. Default true. */
+  awaitPrompt?: boolean;
+  /** Explicit regex source to match against the accumulated output. */
+  until?: string;
+}
+
+export interface RunInstanceCommandResult {
+  bytesSent: number;
+  bytes: number;
+  matched: boolean;
+  reason: 'match' | 'idle' | 'timeout' | 'no-wait';
+  output: string;
+}
+
+/**
+ * Compound console round trip on a running instance: drop stale output, send
+ * the keystrokes, wait for the next prompt, return what came back — the same
+ * one-call ergonomics `run_terminal_command` gives the physical serial
+ * terminal, with no serial port involved.
+ *
+ * Reuses the serial wait engine verbatim (`waitForTerminalOutput`) through
+ * `ConsoleWaitAdapter`, so prompt detection and idle/timeout semantics are
+ * identical on both paths.
+ */
+export async function runInstanceCommand(
+  deps: Dependencies,
+  id: string,
+  opts: RunInstanceCommandOptions,
+): Promise<RunInstanceCommandResult> {
+  const mgr = manager(deps);
+  const hub = mgr.getConsole(id);
+  // Encode before touching the console so a bad payload changes nothing.
+  const buf = encodeConsoleInput(opts, 'cr' as LineEnding);
+  const untilRe = opts.until ? compileUntil(opts.until) : undefined;
+
+  const adapter = new ConsoleWaitAdapter(hub);
+  try {
+    adapter.clearMcpBuffer();
+    mgr.writeConsole(id, buf);
+    const { output, matched, reason } = await waitForTerminalOutput(adapter, {
+      waitMs: opts.waitMs,
+      idleMs: opts.idleMs,
+      awaitPrompt: opts.awaitPrompt ?? true,
+      until: untilRe,
+    });
+    return {
+      bytesSent: buf.length,
+      bytes: output.length,
+      matched,
+      reason,
+      output: output.toString('latin1'),
+    };
+  } finally {
+    adapter.dispose();
+  }
 }
 
 export function readInstanceConsole(

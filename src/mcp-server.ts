@@ -28,6 +28,7 @@ import {
   destroyInstance as destroyInstanceSvc,
   writeInstanceConsole,
   readInstanceConsole,
+  runInstanceCommand,
 } from './services/instance-service';
 import {
   snapshotInstance,
@@ -52,7 +53,8 @@ import { validateProfile, autoAssign } from './services/collision-validator';
 import { enableDiskServing, disableDiskServing, broadcastStatus } from './services/disk-serving';
 import { listDiskImagesWithDetails, listCassettesWithDetails } from './services/file-listing';
 import { startRawReplay, startXmodemSend, cancelActiveTransfer } from './services/transfer';
-import { convertLineEndings, LineEnding } from './replay-engine';
+import { LineEnding } from './replay-engine';
+import { encodeConsoleInput } from './services/console-input';
 import { safeResolvePath } from './utils/safe-path';
 import { isDiskMounted } from './utils/drive-status';
 import { getClientMountRegistry } from './client-mount-registry';
@@ -1587,20 +1589,7 @@ export function createMcpServer(deps: Dependencies): McpServer {
           throw new Error('Terminal serial port is not open');
         }
 
-        const mode = (lineEnding ?? 'cr') as LineEnding;
-        let buf = convertLineEndings(Buffer.from(text), mode);
-
-        // Ensure the buffer ends with the target line terminator so bare commands
-        // like "DIR" are executed by CP/M (convertLineEndings only converts existing
-        // newlines — it does not append one when the text has no trailing newline).
-        if (mode !== 'raw') {
-          const terminator = mode === 'lf'   ? Buffer.from([0x0A])
-                           : mode === 'crlf' ? Buffer.from([0x0D, 0x0A])
-                           :                   Buffer.from([0x0D]);
-          if (!buf.slice(-terminator.length).equals(terminator)) {
-            buf = Buffer.concat([buf, terminator]);
-          }
-        }
+        const buf = encodeConsoleInput({ text, lineEnding: lineEnding as LineEnding }, 'cr');
 
         await deps.terminalManager.write(buf);
 
@@ -1714,16 +1703,7 @@ export function createMcpServer(deps: Dependencies): McpServer {
           throw new Error('Terminal serial port is not open');
         }
 
-        const mode = (lineEnding ?? 'cr') as LineEnding;
-        let buf = convertLineEndings(Buffer.from(text), mode);
-        if (mode !== 'raw') {
-          const terminator = mode === 'lf'   ? Buffer.from([0x0A])
-                           : mode === 'crlf' ? Buffer.from([0x0D, 0x0A])
-                           :                   Buffer.from([0x0D]);
-          if (!buf.slice(-terminator.length).equals(terminator)) {
-            buf = Buffer.concat([buf, terminator]);
-          }
-        }
+        const buf = encodeConsoleInput({ text, lineEnding: lineEnding as LineEnding }, 'cr');
 
         deps.terminalManager.clearMcpBuffer();
         await deps.terminalManager.write(buf);
@@ -2612,15 +2592,68 @@ export function createMcpServer(deps: Dependencies): McpServer {
 
   server.tool(
     'write_instance_console',
-    'Send keystrokes to a running instance\'s console (RX). Use \\r for Enter, e.g. "DIR\\r".',
+    [
+      "Send keystrokes to a running instance's console (RX).",
+      '',
+      'A literal CR in `input` may not survive the caller\'s text channel (some transports fold it to LF, which an 8-bit line editor ignores — the command then never runs). Two reliable ways to press Enter:',
+      '  - `bytes: [13]` (or `base64`) — exact bytes, never converted.',
+      '  - `input: "DIR"` with `lineEnding: "cr"` — a CR is appended, and any stray LF is rewritten to CR server-side.',
+      '',
+      '`input` alone defaults to `lineEnding: "raw"` (bytes pass through untouched). Prefer `run_instance_command` for a command + its output in one round trip.',
+    ].join('\n'),
     {
       id: z.string().describe('Instance id'),
-      input: z.string().describe('Characters to send to the console (control chars allowed)'),
+      input: z.string().optional().describe('Characters to send to the console (control chars allowed)'),
+      bytes: z.array(z.number().int().min(0).max(255)).optional().describe('Exact byte values, e.g. [13] for Enter. Immune to text-channel mangling; `lineEnding` is not applied.'),
+      base64: z.string().optional().describe('Exact bytes as base64 — same guarantee as `bytes`, for longer payloads.'),
+      lineEnding: z.enum(['cr', 'lf', 'crlf', 'raw']).optional().describe('Applied to `input` only: cr (CP/M Enter), lf, crlf, raw (default — no conversion, no append)'),
     },
-    async ({ id, input }) => {
+    async ({ id, input, bytes, base64, lineEnding }) => {
       try {
-        writeInstanceConsole(deps, id, input);
-        return { content: [{ type: 'text', text: JSON.stringify({ id, wrote: input.length }, null, 2) }] };
+        const wrote = writeInstanceConsole(deps, id, {
+          text: input,
+          bytes,
+          base64,
+          lineEnding: (lineEnding ?? 'raw') as LineEnding,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ id, wrote }, null, 2) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'run_instance_command',
+    [
+      'Compound helper for a running instance: drop stale console output, send `text` (CR appended by default), wait for the next prompt, and return the captured output. One round trip instead of three.',
+      '',
+      'The console twin of `run_terminal_command` — same prompt detection and timing defaults (`awaitPrompt=true`, `waitMs=5000`, `idleMs=200`), but no serial port required. Bump `waitMs` for long-running programs; pass `awaitPrompt=false` for fire-and-forget writes.',
+    ].join('\n'),
+    {
+      id: z.string().describe('Instance id'),
+      text: z.string().optional().describe('Command to send (e.g. "DIR"). A line terminator is appended automatically unless lineEnding is "raw".'),
+      bytes: z.array(z.number().int().min(0).max(255)).optional().describe('Exact byte values to send instead of `text` (e.g. [13] for a bare Enter).'),
+      base64: z.string().optional().describe('Exact bytes as base64 to send instead of `text`.'),
+      lineEnding: z.enum(['cr', 'lf', 'crlf', 'raw']).optional().describe('Line ending mode for `text`: cr (default, CP/M), lf, crlf, raw (no conversion, no append)'),
+      waitMs: z.number().min(0).max(30000).optional().describe('Hard safety cap in ms. Default 5000.'),
+      idleMs: z.number().min(50).max(10000).optional().describe('Return once no new bytes arrive for this many ms. Default 200.'),
+      awaitPrompt: z.boolean().optional().describe('Return as soon as a CP/M `A>`..`P>`, MBASIC `Ok`, or `READY` prompt appears. Default true.'),
+      until: z.string().optional().describe('Explicit regex to match against the accumulated output. Overrides `awaitPrompt`.'),
+    },
+    async ({ id, text, bytes, base64, lineEnding, waitMs, idleMs, awaitPrompt, until }) => {
+      try {
+        const result = await runInstanceCommand(deps, id, {
+          text,
+          bytes,
+          base64,
+          lineEnding: lineEnding as LineEnding,
+          waitMs,
+          idleMs,
+          awaitPrompt,
+          until,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ id, success: true, ...result }, null, 2) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
       }

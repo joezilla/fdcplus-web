@@ -117,3 +117,51 @@ export function consoleSourceFromCard(card: unknown): IConsoleSource | null {
     writeByte: (byte) => channel.enqueueRx(byte & 0xff),
   };
 }
+
+/**
+ * Adapt a `ConsoleHub` to the `TerminalWaitDeps` contract in `mcp-terminal-wait`,
+ * so an emulated machine's console gets the same send-and-wait-for-prompt
+ * round trip as the physical serial terminal — no serial port involved.
+ *
+ * The hub already keeps a rolling buffer with a monotonic byte cursor, so
+ * "clear the buffer" here means "advance my cursor to now" (non-destructive —
+ * other readers, like the browser terminal, keep their own cursors).
+ */
+export class ConsoleWaitAdapter {
+  private cursor: number;
+  private readonly unsubs = new Map<(data: Buffer) => void, () => void>();
+
+  constructor(private readonly hub: ConsoleHub) {
+    // Start from the hub's current position: a command's wait must not match a
+    // prompt that was already on screen before it was sent.
+    this.cursor = hub.readSince(0).cursor;
+  }
+
+  addMcpDataListener(fn: (data: Buffer) => void): void {
+    if (this.unsubs.has(fn)) return;
+    const off = this.hub.subscribe({ onOutput: (bytes) => fn(Buffer.from(bytes)) });
+    this.unsubs.set(fn, off);
+  }
+
+  removeMcpDataListener(fn: (data: Buffer) => void): void {
+    this.unsubs.get(fn)?.();
+    this.unsubs.delete(fn);
+  }
+
+  /** Bytes seen since the cursor, as a Buffer (the hub buffers byte-per-char,
+   * so latin1 round-trips exactly). */
+  readMcpBuffer(): Buffer {
+    return Buffer.from(this.hub.readSince(this.cursor).data, 'latin1');
+  }
+
+  /** Drop everything already emitted — advance to the hub's current position. */
+  clearMcpBuffer(): void {
+    this.cursor = this.hub.readSince(0).cursor;
+  }
+
+  /** Detach every listener this adapter registered. */
+  dispose(): void {
+    for (const off of this.unsubs.values()) off();
+    this.unsubs.clear();
+  }
+}

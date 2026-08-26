@@ -23,6 +23,7 @@ import {
   setInstanceSpeed,
   writeInstanceConsole,
   readInstanceConsole,
+  runInstanceCommand,
 } from '../src/services/instance-service';
 import { getMountRegistry } from '../src/mount-registry';
 import { getClientMountRegistry } from '../src/client-mount-registry';
@@ -198,5 +199,86 @@ describe('instance-service', () => {
 
     await destroyInstance(deps, info.id);
     expect(listInstances(deps)).toHaveLength(0);
+  });
+
+  // The bug this covers: a caller whose channel folds CR to LF could not press
+  // Enter, so the monitor's line editor never executed anything.
+  describe('byte-safe console input', () => {
+    test('`bytes: [13]` delivers an exact CR', async () => {
+      const deps = await makeDeps();
+      const info = await createTransientInstance(deps, { profile }, 'mcp');
+      const wrote = writeInstanceConsole(deps, info.id, { bytes: [13] });
+      expect(wrote).toBe(1);
+      expect(readInstanceConsole(deps, info.id, 0).data).toBe('\r');
+      await destroyInstance(deps, info.id);
+    });
+
+    test('a CR mangled to LF is repaired by lineEnding: cr', async () => {
+      const deps = await makeDeps();
+      const info = await createTransientInstance(deps, { profile }, 'mcp');
+      writeInstanceConsole(deps, info.id, { text: 'DIR\n', lineEnding: 'cr' });
+      expect(readInstanceConsole(deps, info.id, 0).data).toBe('DIR\r');
+      await destroyInstance(deps, info.id);
+    });
+
+    test('a bare string still writes raw bytes (unchanged contract)', async () => {
+      const deps = await makeDeps();
+      const info = await createTransientInstance(deps, { profile }, 'mcp');
+      writeInstanceConsole(deps, info.id, 'DIR\n');
+      expect(readInstanceConsole(deps, info.id, 0).data).toBe('DIR\n');
+      await destroyInstance(deps, info.id);
+    });
+  });
+
+  describe('runInstanceCommand', () => {
+    test('returns as soon as a prompt appears in the echoed output', async () => {
+      const deps = await makeDeps();
+      const info = await createTransientInstance(deps, { profile }, 'mcp');
+      // The fake console echoes RX to TX, so sending a prompt makes one appear.
+      const res = await runInstanceCommand(deps, info.id, { text: 'A>' });
+      expect(res.reason).toBe('match');
+      expect(res.matched).toBe(true);
+      expect(res.bytesSent).toBe(3); // 'A' '>' CR
+      expect(res.output).toBe('A>\r');
+      await destroyInstance(deps, info.id);
+    });
+
+    test('falls back to idle when no prompt arrives', async () => {
+      const deps = await makeDeps();
+      const info = await createTransientInstance(deps, { profile }, 'mcp');
+      const res = await runInstanceCommand(deps, info.id, { text: 'DIR', idleMs: 60, waitMs: 2000 });
+      expect(res.reason).toBe('idle');
+      expect(res.matched).toBe(false);
+      expect(res.output).toBe('DIR\r');
+      await destroyInstance(deps, info.id);
+    });
+
+    test('does not replay output that predates the command', async () => {
+      const deps = await makeDeps();
+      const info = await createTransientInstance(deps, { profile }, 'mcp');
+      writeInstanceConsole(deps, info.id, { text: 'STALE OUTPUT', lineEnding: 'raw' });
+      const res = await runInstanceCommand(deps, info.id, { text: 'DIR', idleMs: 60, waitMs: 2000 });
+      expect(res.output).toBe('DIR\r'); // the stale bytes are behind the cursor
+      await destroyInstance(deps, info.id);
+    });
+
+    test('leaves no console subscriber behind', async () => {
+      const deps = await makeDeps();
+      const info = await createTransientInstance(deps, { profile }, 'mcp');
+      const hub = deps.instanceManager!.getConsole(info.id);
+      const before = hub.subscriberCount;
+      await runInstanceCommand(deps, info.id, { text: 'DIR', idleMs: 60, waitMs: 2000 });
+      expect(hub.subscriberCount).toBe(before);
+      await destroyInstance(deps, info.id);
+    });
+
+    test('accepts an exact byte payload (a bare Enter) instead of text', async () => {
+      const deps = await makeDeps();
+      const info = await createTransientInstance(deps, { profile }, 'mcp');
+      const res = await runInstanceCommand(deps, info.id, { bytes: [13], idleMs: 60, waitMs: 2000 });
+      expect(res.bytesSent).toBe(1);
+      expect(res.output).toBe('\r');
+      await destroyInstance(deps, info.id);
+    });
   });
 });
