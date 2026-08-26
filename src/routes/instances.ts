@@ -455,13 +455,25 @@ export function registerInstanceRoutes(router: Router, deps: Dependencies): void
    *         application/json:
    *           schema:
    *             type: object
-   *             required: [input]
+   *             description: Exactly one of `input`, `bytes`, or `base64`.
    *             properties:
    *               input:
    *                 type: string
-   *                 description: Characters to send (use \r for Enter)
+   *                 description: "Characters to send. A literal CR may not survive some clients — use lineEnding cr, or send `bytes` instead."
+   *               bytes:
+   *                 type: array
+   *                 items: { type: integer, minimum: 0, maximum: 255 }
+   *                 description: Exact byte values, e.g. [13] for Enter. Never line-ending converted.
+   *               base64:
+   *                 type: string
+   *                 description: Exact bytes as base64 — same guarantee as `bytes`.
+   *               lineEnding:
+   *                 type: string
+   *                 enum: [cr, lf, crlf, raw]
+   *                 description: Applied to `input` only. Default raw (unchanged bytes).
    *     responses:
    *       200: { description: Accepted }
+   *       400: { description: "No input field, more than one, or an invalid byte/base64 payload" }
    */
   router.get('/api/instances/:id/console', (req: Request, res: Response): void => {
     try {
@@ -474,12 +486,17 @@ export function registerInstanceRoutes(router: Router, deps: Dependencies): void
 
   router.post('/api/instances/:id/console', (req: Request, res: Response): void => {
     try {
-      const input = req.body?.input;
-      if (typeof input !== 'string') {
-        throw new ServiceError('`input` (string) is required', 400);
+      const { input, bytes, base64, lineEnding } = req.body ?? {};
+      if (input !== undefined && typeof input !== 'string') {
+        throw new ServiceError('`input` must be a string', 400);
       }
-      writeInstanceConsole(deps, req.params.id, input);
-      res.json({ id: req.params.id, wrote: input.length });
+      const wrote = writeInstanceConsole(deps, req.params.id, {
+        text: input,
+        bytes,
+        base64,
+        lineEnding: lineEnding ?? 'raw',
+      });
+      res.json({ id: req.params.id, wrote });
     } catch (error) {
       sendError(res, error);
     }

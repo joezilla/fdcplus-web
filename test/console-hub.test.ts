@@ -4,7 +4,7 @@
  * a console source out of a seed card.
  */
 
-import { ConsoleHub, IConsoleSource, consoleSourceFromCard } from '../src/services/console-hub';
+import { ConsoleHub, ConsoleWaitAdapter, IConsoleSource, consoleSourceFromCard } from '../src/services/console-hub';
 
 function fakeSource() {
   let emit: (byte: number) => void = () => {};
@@ -113,5 +113,76 @@ describe('consoleSourceFromCard', () => {
   test('returns null for a card with no console channel', () => {
     expect(consoleSourceFromCard({ id: 'dcdd' })).toBeNull();
     expect(consoleSourceFromCard(null)).toBeNull();
+  });
+});
+
+describe('ConsoleWaitAdapter — the serial wait engine over a console hub', () => {
+  test('starts at the hub\'s current position: pre-existing output is not replayed', () => {
+    const s = fakeSource();
+    const hub = new ConsoleHub(s.source);
+    s.emit(0x41); // output that predates the command
+    const adapter = new ConsoleWaitAdapter(hub);
+    expect(adapter.readMcpBuffer().length).toBe(0);
+    s.emit(0x42);
+    expect(adapter.readMcpBuffer().toString('latin1')).toBe('B');
+  });
+
+  test('clearMcpBuffer advances past what has already been emitted', () => {
+    const s = fakeSource();
+    const hub = new ConsoleHub(s.source);
+    const adapter = new ConsoleWaitAdapter(hub);
+    s.emit(0x41);
+    adapter.clearMcpBuffer();
+    expect(adapter.readMcpBuffer().length).toBe(0);
+    s.emit(0x42);
+    expect(adapter.readMcpBuffer().toString('latin1')).toBe('B');
+  });
+
+  test('clearing is non-destructive — other readers keep their own cursors', () => {
+    const s = fakeSource();
+    const hub = new ConsoleHub(s.source);
+    const adapter = new ConsoleWaitAdapter(hub);
+    s.emit(0x41);
+    adapter.clearMcpBuffer();
+    expect(hub.readSince(0).data).toBe('A'); // the browser terminal still sees it
+  });
+
+  test('high bytes round-trip through the latin1 buffer unchanged', () => {
+    const s = fakeSource();
+    const hub = new ConsoleHub(s.source);
+    const adapter = new ConsoleWaitAdapter(hub);
+    s.emit(0xff);
+    s.emit(0x0d);
+    expect([...adapter.readMcpBuffer()]).toEqual([0xff, 0x0d]);
+  });
+
+  test('listeners are pushed data, and dispose detaches every one of them', () => {
+    const s = fakeSource();
+    const hub = new ConsoleHub(s.source);
+    const adapter = new ConsoleWaitAdapter(hub);
+    const seen: number[] = [];
+    const fn = (d: Buffer) => seen.push(d[0]);
+    adapter.addMcpDataListener(fn);
+    adapter.addMcpDataListener(fn); // idempotent — no double subscription
+    expect(hub.subscriberCount).toBe(1);
+
+    s.emit(0x41);
+    expect(seen).toEqual([0x41]);
+
+    adapter.dispose();
+    expect(hub.subscriberCount).toBe(0);
+    s.emit(0x42);
+    expect(seen).toEqual([0x41]);
+  });
+
+  test('removeMcpDataListener detaches just that listener', () => {
+    const s = fakeSource();
+    const hub = new ConsoleHub(s.source);
+    const adapter = new ConsoleWaitAdapter(hub);
+    const fn = () => {};
+    adapter.addMcpDataListener(fn);
+    adapter.removeMcpDataListener(fn);
+    expect(hub.subscriberCount).toBe(0);
+    adapter.dispose(); // still safe with nothing attached
   });
 });

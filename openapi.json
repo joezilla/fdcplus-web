@@ -3455,13 +3455,34 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "input"
-                ],
+                "description": "Exactly one of `input`, `bytes`, or `base64`.",
                 "properties": {
                   "input": {
                     "type": "string",
-                    "description": "Characters to send (use \\r for Enter)"
+                    "description": "Characters to send. A literal CR may not survive some clients — use lineEnding cr, or send `bytes` instead."
+                  },
+                  "bytes": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 255
+                    },
+                    "description": "Exact byte values, e.g. [13] for Enter. Never line-ending converted."
+                  },
+                  "base64": {
+                    "type": "string",
+                    "description": "Exact bytes as base64 — same guarantee as `bytes`."
+                  },
+                  "lineEnding": {
+                    "type": "string",
+                    "enum": [
+                      "cr",
+                      "lf",
+                      "crlf",
+                      "raw"
+                    ],
+                    "description": "Applied to `input` only. Default raw (unchanged bytes)."
                   }
                 }
               }
@@ -3471,6 +3492,9 @@
         "responses": {
           "200": {
             "description": "Accepted"
+          },
+          "400": {
+            "description": "No input field, more than one, or an invalid byte/base64 payload"
           }
         }
       }
