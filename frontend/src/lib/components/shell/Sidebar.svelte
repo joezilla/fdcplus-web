@@ -4,6 +4,7 @@
   import Led from '$lib/components/shared/Led.svelte';
   import { serverStatus, connected } from '$lib/services/socket';
   import type { DriveState } from '$lib/types/api';
+  import { href, type PageId } from '$lib/stores/route';
 
   function formatUptime(seconds: number | undefined): string {
     if (seconds === undefined || seconds < 0) return '—';
@@ -27,7 +28,9 @@
     });
   }
 
-  type NavId = 'terminal' | 'disks' | 'drives' | 'clients' | 'cassettes' | 'catalog' | 'profiles' | 'machines' | 'scripts' | 'config';
+  // The page union lives with the route grammar, so navigate()/href() calls stay
+  // typo-proof — svelte-check cannot check a hand-built URL string.
+  type NavId = PageId;
 
   interface Props {
     active: NavId;
@@ -104,12 +107,19 @@
         {#each group.items as item}
           {@const isActive = item.id === active}
           {@const badge = item.badge()}
-          <button
-            type="button"
+          <a
             class="nav-item"
             class:active={isActive}
+            href={href({ page: item.id })}
             aria-current={isActive ? 'page' : undefined}
-            onclick={() => go(item.id)}
+            onclick={(e) => {
+              // Hand modified and non-primary clicks to the browser so
+              // open-in-new-tab, open-in-new-window and "copy link address" all
+              // behave natively. Only a plain left click is intercepted.
+              if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+              e.preventDefault();
+              go(item.id);
+            }}
           >
             {#if isActive}
               <span class="nav-item-bar" aria-hidden="true"></span>
@@ -119,7 +129,7 @@
             {#if badge}
               <span class="nav-item-badge fdc-mono">{badge}</span>
             {/if}
-          </button>
+          </a>
         {/each}
       </div>
     {/each}
@@ -210,6 +220,10 @@
     border: 1px solid transparent;
     cursor: pointer;
     text-align: left;
+    /* Now an <a> so nav items are real links (middle-click / new tab / copy
+       link address). Reset the anchor defaults the button never had. */
+    text-decoration: none;
+    color: inherit;
     transition:
       background var(--dur-short) var(--ease-standard),
       border-color var(--dur-short) var(--ease-standard);

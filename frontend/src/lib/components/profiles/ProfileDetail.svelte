@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/services/api';
   import { showToast } from '$lib/stores/toast';
-  import { pendingRunInstance } from '$lib/stores/pendingRun';
+  import { navigate } from '$lib/stores/route';
   import type { MachineProfile, CardDefinition, ProfileCardInstance, ProfileValidation, CpuInfo } from '$lib/types/api';
   import Button from '$lib/components/shared/Button.svelte';
   import Card from '$lib/components/shared/Card.svelte';
@@ -19,9 +19,8 @@
     onBack: () => void;
     onChanged: (id: string | null) => void;
     onDeleted: () => void;
-    onNavigate?: (page: 'machines') => void;
   }
-  let { id, onBack, onChanged, onDeleted, onNavigate }: Props = $props();
+  let { id, onBack, onChanged, onDeleted }: Props = $props();
 
   let profile = $state<MachineProfile | null>(null);
   let versions = $state<MachineProfile[]>([]);
@@ -233,10 +232,11 @@
       busy = true;
       const speed = launchSpeed === 'max' ? 'max' : Number(launchSpeed);
       const { instance } = await api.launchTransient(profile.id, speed);
-      // Jump straight into the Run cockpit for the freshly-launched instance;
-      // the Machines page opens it once it appears in its polled list.
-      pendingRunInstance.set(instance.id);
-      onNavigate?.('machines');
+      // Jump straight into the Run cockpit for the freshly-launched instance.
+      // This is the same code path as a cold deep-link — the Machines page
+      // resolves the id against its polled list, so the launch race and the
+      // "landed before the fetch returned" case are handled by one mechanism.
+      navigate({ page: 'machines', detail: instance.id });
     } catch (err) {
       showToast((err as Error).message, 'error');
     } finally {

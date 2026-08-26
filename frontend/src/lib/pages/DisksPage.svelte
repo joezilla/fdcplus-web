@@ -15,7 +15,7 @@
   import LabelStrip from '$lib/components/shared/LabelStrip.svelte';
   import EmptyState from '$lib/components/shared/EmptyState.svelte';
   import Modal from '$lib/components/shared/Modal.svelte';
-  import { pendingDiskFocus } from '$lib/stores/pendingDiskFocus';
+  import { route, setParams } from '$lib/stores/route';
   import type { DiskImageInfo, CpmFileInfo, SnapshotInfo, ReadonlyWritePolicy } from '$lib/types/api';
 
   interface Props {
@@ -38,19 +38,27 @@
   // Mounting/ejecting itself lives on the Drive Bays page (Epic 6).
   let drives = $derived($serverStatus?.drives ?? []);
 
-  // Deep-link: a disk-name link elsewhere navigated here asking us to surface a
-  // specific image — filter the library to it, scroll it into view, and briefly
-  // highlight the row.
+  // Deep-link: `#/disks?focus=<name>` surfaces a specific image — filter the
+  // library to it, scroll it into view, and briefly highlight the row.
   let libraryEl = $state<HTMLElement | null>(null);
   let focusName = $state<string | null>(null);
+  // Non-reactive: which ?focus= value we have already acted on. A URL param
+  // (unlike the fire-once store it replaces) persists, so this effect re-runs on
+  // every unrelated route update and MUST be idempotent — otherwise it
+  // re-scrolls and re-highlights forever. A plain `let` is invisible to the
+  // reactivity graph, so writing it here cannot re-trigger the effect.
+  let appliedFocus: string | null = null;
   $effect(() => {
-    const name = $pendingDiskFocus;
-    if (!name) return;
-    pendingDiskFocus.set(null);
-    searchQuery = name;
-    focusName = name;
+    const want = $route.page === 'disks' ? ($route.params.focus ?? null) : null;
+    if (!want) { appliedFocus = null; return; }
+    if (appliedFocus === want) return;
+    appliedFocus = want;
+    searchQuery = want;
+    focusName = want;
     queueMicrotask(() => libraryEl?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-    setTimeout(() => { if (focusName === name) focusName = null; }, 2800);
+    // Reads inside a timeout callback are untracked, so this does not make
+    // focusName a dependency of the effect that writes it.
+    setTimeout(() => { if (focusName === want) focusName = null; }, 2800);
   });
   let filteredImages = $derived(
     searchQuery
@@ -570,7 +578,12 @@
       <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;">
         <LabelStrip>Disk image library</LabelStrip>
         <div style="flex: 1; min-width: min(200px, 100%);">
-          <Input variant="search" placeholder="Filter images…" bind:value={searchQuery} />
+          <Input
+            variant="search"
+            placeholder="Filter images…"
+            bind:value={searchQuery}
+            oninput={() => { if ($route.params.focus) setParams({ focus: null }); }}
+          />
         </div>
       </div>
 
