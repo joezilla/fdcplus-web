@@ -9,11 +9,16 @@
   import Icon from '$lib/components/shared/Icon.svelte';
   import CardDetail from '$lib/components/catalog/CardDetail.svelte';
   import NewCardModal from '$lib/components/catalog/NewCardModal.svelte';
+  import { route, navigate } from '$lib/stores/route';
 
   let cards = $state<CardDefinition[]>([]);
   let facets = $state<CatalogFacets>({ kinds: [], types: [], makers: [], capabilities: [] });
   let loading = $state(true);
-  let selectedId = $state<string | null>(null);
+  // The route owns the selection: nothing here writes back to the URL except
+  // via navigate(), so there is no state<->URL cycle to oscillate.
+  const selectedId = $derived($route.page === 'catalog' ? $route.detail : null);
+  const openCard = (id: string) => navigate({ page: 'catalog', detail: id });
+  const closeCard = () => navigate({ page: 'catalog' });
   let showNew = $state(false);
 
   // Active filters (single-select facets + free text), applied client-side over
@@ -99,9 +104,10 @@
 {#if selectedId}
   <CardDetail
     id={selectedId}
-    onBack={() => (selectedId = null)}
+    onBack={closeCard}
     onDeleted={() => {
-      selectedId = null;
+      // replace: the deleted card's URL must not stay reachable via Back.
+      navigate({ page: 'catalog' }, { replace: true });
       load();
     }}
   />
@@ -222,7 +228,7 @@
           {#each section.items as card (card.id)}
             <button
               class="card-btn"
-              onclick={() => (selectedId = card.id)}
+              onclick={() => openCard(card.id)}
               aria-label="Open {card.id} datasheet"
             >
               <div class="card-body">

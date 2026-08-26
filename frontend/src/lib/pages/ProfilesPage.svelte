@@ -9,34 +9,25 @@
   import Icon from '$lib/components/shared/Icon.svelte';
   import ProfileDetail from '$lib/components/profiles/ProfileDetail.svelte';
   import EmptyState from '$lib/components/shared/EmptyState.svelte';
-  import { pendingProfileFocus } from '$lib/stores/pendingProfileFocus';
-
-  interface Props {
-    onNavigate?: (page: 'machines') => void;
-  }
-  let { onNavigate }: Props = $props();
+  import { route, navigate } from '$lib/stores/route';
 
   let profiles = $state<MachineProfile[]>([]);
   let instances = $state<InstanceStatus[]>([]);
   let loading = $state(true);
-  let selectedId = $state<string | null>(null);
+  // The route owns the selection. The 'preset:' strip is defensive — links emit
+  // the canonical bare id (see MachinesPage.goProfile) but a hand-typed
+  // '#/profiles/preset:foo' should still resolve.
+  const selectedId = $derived.by(() => {
+    if ($route.page !== 'profiles' || !$route.detail) return null;
+    const d = $route.detail;
+    return d.startsWith('preset:') ? d.slice('preset:'.length) : d;
+  });
 
   // An instance's profileRef is the profile id, or `preset:<id>` for a preset.
   const runningFor = (p: MachineProfile): number =>
     instances.filter(
       (i) => i.status === 'running' && (i.profileRef === p.id || i.profileRef === `preset:${p.id}`),
     ).length;
-
-  // Deep-link: a profileRef link elsewhere (cockpit / Machines card) navigated
-  // here and asked us to open a specific profile. Resolve it against the loaded
-  // list — `preset:<id>` refs match the bare preset id — then clear the intent.
-  $effect(() => {
-    const raw = $pendingProfileFocus;
-    if (!raw || loading) return;
-    const id = raw.startsWith('preset:') ? raw.slice('preset:'.length) : raw;
-    if (profiles.some((p) => p.id === id)) selectedId = id;
-    pendingProfileFocus.set(null);
-  });
 
   // Presets are profiles marked source:'preset' — editable templates you clone
   // a new machine from. Everything else is a user machine.
@@ -63,7 +54,8 @@
         warnings.length ? 'warning' : 'success',
       );
       await load();
-      selectedId = profile.id;
+      // push: the imported profile did not exist a moment ago — a real destination.
+      navigate({ page: 'profiles', detail: profile.id });
     } catch (err) {
       showToast(`Import failed: ${(err as Error).message}`, 'error');
     } finally {
@@ -112,7 +104,8 @@
       showToast(`Created ${profile.id}`, 'success');
       creating = false;
       await load();
-      selectedId = profile.id;
+      // push: the clone did not exist a moment ago — a real destination.
+      navigate({ page: 'profiles', detail: profile.id });
     } catch (err) {
       showToast((err as Error).message, 'error');
     } finally {
@@ -126,10 +119,14 @@
 {#if selectedId}
   <ProfileDetail
     id={selectedId}
-    {onNavigate}
-    onBack={() => (selectedId = null)}
-    onChanged={(id) => { load(); if (id) selectedId = id; }}
-    onDeleted={() => { selectedId = null; load(); }}
+    onBack={() => navigate({ page: 'profiles' })}
+    onChanged={(id) => {
+      load();
+      // replace: a save that bumps the version is the same logical view under a
+      // new id — Back should reach the list, not the pre-save id.
+      if (id) navigate({ page: 'profiles', detail: id }, { replace: true });
+    }}
+    onDeleted={() => { navigate({ page: 'profiles' }, { replace: true }); load(); }}
   />
 {:else}
   {#snippet headerActions()}
@@ -181,7 +178,7 @@
     {/if}
 
     {#snippet profileCard(p: MachineProfile)}
-      <button class="card-btn" onclick={() => (selectedId = p.id)} aria-label="Open {p.name}">
+      <button class="card-btn" onclick={() => navigate({ page: 'profiles', detail: p.id })} aria-label="Open {p.name}">
         <div class="card-body">
           <div class="card-top">
             <span class="pname">{p.name}</span>

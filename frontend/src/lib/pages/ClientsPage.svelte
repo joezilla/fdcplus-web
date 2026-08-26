@@ -15,9 +15,7 @@
   import DiskPicker from '$lib/components/shared/DiskPicker.svelte';
   import DriveCard from '$lib/components/shared/DriveCard.svelte';
   import type { ClientBay, ClientDrive } from '$lib/types/api';
-  import { pendingRunInstance } from '$lib/stores/pendingRun';
-  import { pendingClientFocus } from '$lib/stores/pendingClientFocus';
-  import { pendingDiskFocus } from '$lib/stores/pendingDiskFocus';
+  import { route, navigate } from '$lib/stores/route';
 
   interface Props {
     onNavigate?: (page: 'terminal' | 'machines' | 'disks' | 'drives') => void;
@@ -26,8 +24,7 @@
 
   /** Deep-link a client's mounted disk to its library entry (inspect the image). */
   function goDisk(filename: string): void {
-    pendingDiskFocus.set(filename);
-    onNavigate?.('disks');
+    navigate({ page: 'disks', params: { focus: filename } });
   }
 
   /** Provenance (Epic 6.4): where a drive's mount *originates*, so you can manage
@@ -49,22 +46,33 @@
 
   const orphans = $derived(clients.filter((c) => c.isInstance && !c.instanceExists));
 
-  // Deep-link from a machine → highlight + scroll to its client once loaded.
+  // Deep-link `#/clients?focus=<id>` → highlight + scroll to that client once
+  // it has actually loaded.
+  //
+  // `appliedFocus` is a plain `let` (see DisksPage): a URL param persists, so
+  // this effect re-runs on every poll and unrelated route change and must be
+  // idempotent, or it re-scrolls forever.
+  let appliedFocus: string | null = null;
   $effect(() => {
-    const want = $pendingClientFocus;
-    if (want && clients.some((c) => c.clientId === want)) {
-      focusId = want;
-      pendingClientFocus.set(null);
-      requestAnimationFrame(() => {
-        document.getElementById(`client-${want}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      });
-      setTimeout(() => { if (focusId === want) focusId = null; }, 2600);
-    }
+    const want = $route.page === 'clients' ? ($route.params.focus ?? null) : null;
+    // Read `clients` up front so it is tracked even when we return early waiting
+    // for it — Svelte collects dependencies during the run, so returning before
+    // this read would leave the effect unsubscribed and it would never re-fire
+    // when the fetch lands.
+    const list = clients;
+    if (!want) { appliedFocus = null; return; }
+    if (appliedFocus === want) return;
+    if (!list.some((c) => c.clientId === want)) return; // wait for the fetch
+    appliedFocus = want;
+    focusId = want;
+    requestAnimationFrame(() => {
+      document.getElementById(`client-${want}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    setTimeout(() => { if (focusId === want) focusId = null; }, 2600);
   });
 
   function openMachine(instanceId: string) {
-    pendingRunInstance.set(instanceId);
-    onNavigate?.('machines');
+    navigate({ page: 'machines', detail: instanceId });
   }
 
   async function cleanupOrphans() {

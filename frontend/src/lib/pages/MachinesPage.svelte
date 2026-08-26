@@ -2,9 +2,7 @@
   import { pageVisible } from '$lib/stores/pageVisible';
   import { api } from '$lib/services/api';
   import { showToast } from '$lib/stores/toast';
-  import { pendingRunInstance } from '$lib/stores/pendingRun';
-  import { pendingClientFocus } from '$lib/stores/pendingClientFocus';
-  import { pendingProfileFocus } from '$lib/stores/pendingProfileFocus';
+  import { route, navigate } from '$lib/stores/route';
   import type { InstanceStatus, ClientBay } from '$lib/types/api';
   import PageHeader from '$lib/components/shared/PageHeader.svelte';
   import Button from '$lib/components/shared/Button.svelte';
@@ -27,15 +25,16 @@
   const isLinkableProfile = (ref: string): boolean => !!ref && ref !== 'inline';
   function goProfile(ref: string): void {
     if (!isLinkableProfile(ref)) return;
-    pendingProfileFocus.set(ref);
-    onNavigate?.('profiles');
+    // Emit the canonical bare profile id — 'preset:' is an instance-ref detail,
+    // not part of the profile's identity, and should not appear in a shared URL.
+    const id = ref.startsWith('preset:') ? ref.slice('preset:'.length) : ref;
+    navigate({ page: 'profiles', detail: id });
   }
   // A mounted disk in a machine context is something you operate (swap/eject),
   // so its name links to the owning client's drive bays on the Clients page —
   // where those controls live — not to the read-only library entry.
   function manageClientDrives(clientId: string): void {
-    pendingClientFocus.set(clientId);
-    onNavigate?.('clients');
+    navigate({ page: 'clients', params: { focus: clientId } });
   }
 
   let instances = $state<InstanceStatus[]>([]);
@@ -44,43 +43,50 @@
   let consoleFor = $state<InstanceStatus | null>(null);
   let snapshotsFor = $state<InstanceStatus | null>(null);
   let monitorFor = $state<InstanceStatus | null>(null);
-  let runFor = $state<InstanceStatus | null>(null);
-  // Keep the cockpit's instance object live: re-point runFor at the freshly
-  // polled instance each tick (so its disks/speed update in place), and leave the
-  // cockpit if the machine has stopped or been destroyed elsewhere. A freshly
-  // launched machine polls back as 'defined' for a beat before it flips to
-  // 'running' — keep the cockpit through that start window (close only on
-  // 'stopped' or when the instance is gone), else auto-open races the transition.
-  $effect(() => {
-    if (!runFor) return;
-    const cur = instances.find((i) => i.id === runFor!.id);
-    runFor = !cur || cur.status === 'stopped' ? null : cur;
+  // The cockpit is addressed by instance id in the URL; the live object is
+  // re-resolved from every poll, so its disks/speed update in place without the
+  // route ever being rewritten. This one derived replaces two effects that used
+  // to re-point a $state runFor on each tick and consume a pendingRunInstance
+  // intent — both are now just consequences of the id living in the route.
+  const runId = $derived($route.page === 'machines' ? $route.detail : null);
+  const runFor = $derived.by(() => {
+    if (!runId) return null;
+    const i = instances.find((x) => x.id === runId);
+    // A freshly launched machine polls back as 'defined' for a beat before it
+    // flips to 'running' — keep the cockpit through that start window (drop it
+    // only on 'stopped' or when the instance is gone), else a launch races the
+    // transition.
+    return i && i.status !== 'stopped' ? i : null;
   });
-  // Open the Run cockpit for an instance requested elsewhere (e.g. the profile
-  // "Launch" action) once it surfaces in the polled list. launchTransient
-  // resolves before the backend reports the instance as 'running', so match on
-  // presence (any non-stopped status) rather than waiting to catch a 'running'
-  // poll — otherwise the intent can slip between ticks and the cockpit never
-  // opens. Consume the intent as soon as the instance appears (even if it came
-  // up stopped) so a failed launch can't reopen it later.
+
+  // Leave the cockpit when the machine stops or is destroyed elsewhere — but
+  // only once we have actually seen it live. On a cold deep-link the instance is
+  // absent for the first poll or two, and bouncing to the list then would look
+  // like the URL had been rejected.
+  //
+  // `seenRunId` is a plain `let`, not $state: writing it must not re-trigger this
+  // effect. The navigate() write IS a dependency (via $route -> runId), but it
+  // terminates — the re-run has runId === null and returns at the first guard,
+  // and navigate() is itself a no-op on an unchanged route.
+  let seenRunId: string | null = null;
   $effect(() => {
-    const wantId = $pendingRunInstance;
-    if (!wantId) return;
-    const inst = instances.find((i) => i.id === wantId);
-    if (!inst) return;
-    pendingRunInstance.set(null);
-    if (inst.status !== 'stopped') runFor = inst;
+    const id = runId;
+    const live = runFor; // read both before any early return
+    if (!id) { seenRunId = null; return; }
+    if (live) { seenRunId = id; return; }
+    if (seenRunId === id) navigate({ page: 'machines' }, { replace: true });
   });
   let sparkData = $state<Record<string, number[]>>({}); // per-instance effectiveHz ring
   // Toast only on the ok→fail edge so a rate-limit blip doesn't spam the corner.
   let loadOk = true;
 
   // Cockpit vs list, as a *boolean* — the poll effect keys off this, not off
-  // runFor's identity. Effect A re-points runFor at a fresh object every poll;
+  // runFor's identity. runFor resolves to a fresh object on every poll;
   // depending on that object directly would tear down and re-fire the poll on
-  // each response, spinning /api/instances at fetch speed. The derived only
-  // propagates on the null↔non-null edge, so the interval survives.
-  let inCockpit = $derived(runFor !== null);
+  // each response, spinning /api/instances at fetch speed. Deriving from the
+  // route's string id only propagates on the null↔non-null edge, so the
+  // interval survives.
+  let inCockpit = $derived(runId !== null);
 
   let running = $derived(instances.filter((i) => i.status === 'running'));
   let aggregateMHz = $derived(running.reduce((s, i) => s + (i.effectiveHz ?? 0), 0) / 1e6);
@@ -173,8 +179,7 @@
 
   /** Jump to this machine's entry on the Clients page (its `inst:` client). */
   function viewClient(clientId: string) {
-    pendingClientFocus.set(clientId);
-    onNavigate?.('clients');
+    navigate({ page: 'clients', params: { focus: clientId } });
   }
 
   // Poll while the tab is visible. Inside the cockpit the monitor/front-panel
@@ -196,13 +201,33 @@
   <Button variant="ghost" icon="refresh" onclick={load}>Refresh</Button>
 {/snippet}
 
-{#if runFor}
-  <RunView
-    instance={runFor}
-    onBack={() => (runFor = null)}
-    onChanged={load}
-    onProfile={goProfile}
-  />
+{#if runId}
+  <!-- Nested so a cold deep-link never flashes the list for a frame, and so
+       "still loading" is distinguishable from "genuinely gone". -->
+  {#if runFor}
+    <RunView
+      instance={runFor}
+      onBack={() => navigate({ page: 'machines' })}
+      onChanged={load}
+      onProfile={goProfile}
+    />
+  {:else if loading}
+    <div class="fdc-page-body machines">
+      <EmptyState loading>Opening machine…</EmptyState>
+    </div>
+  {:else}
+    {#snippet goneActions()}
+      <Button variant="tonal" icon="arrow_back" onclick={() => navigate({ page: 'machines' })}>
+        Back to machines
+      </Button>
+    {/snippet}
+    <div class="fdc-page-body machines">
+      <EmptyState icon="hub" actions={goneActions}>
+        That machine isn't running — it may have been stopped or destroyed. A
+        cockpit link only resolves while the instance exists.
+      </EmptyState>
+    </div>
+  {/if}
 {:else}
 <PageHeader
   eyebrow="Operate · Virtual Machines"
@@ -292,7 +317,7 @@
 
           <div class="actions">
             {#if i.status === 'running'}
-              <Button variant="filled" size="sm" icon="developer_board" onclick={() => (runFor = i)}>Open</Button>
+              <Button variant="filled" size="sm" icon="developer_board" onclick={() => navigate({ page: 'machines', detail: i.id })}>Open</Button>
               <Button variant="outline" size="sm" icon="stop" onclick={() => act(() => api.stopInstance(i.id), 'Stopped')}>Stop</Button>
             {:else}
               <Button variant="tonal" size="sm" icon="play_arrow" onclick={() => act(() => api.startInstance(i.id), 'Started')}>Start</Button>

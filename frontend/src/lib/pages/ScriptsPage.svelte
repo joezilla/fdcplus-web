@@ -3,6 +3,7 @@
   import { api } from '$lib/services/api';
   import { replayProgress } from '$lib/services/socket';
   import { showToast } from '$lib/stores/toast';
+  import { route, navigate } from '$lib/stores/route';
   import Icon from '$lib/components/shared/Icon.svelte';
   import IconButton from '$lib/components/shared/IconButton.svelte';
   import Button from '$lib/components/shared/Button.svelte';
@@ -16,7 +17,8 @@
   import type { ScriptInfo } from '$lib/types/api';
 
   let scripts = $state<ScriptInfo[]>([]);
-  let selectedScript = $state<string | null>(null);
+  // The route owns the selection; nothing here assigns it.
+  const selectedScript = $derived($route.page === 'scripts' ? $route.detail : null);
   let scriptContent = $state('');
   let loading = $state(true);
   let editing = $state(false);
@@ -61,11 +63,30 @@
     }
   }
 
-  async function selectScript(name: string) {
+  const selectScript = (name: string) => navigate({ page: 'scripts', detail: name });
+
+  /**
+   * Fetch the selected script's body when the route names a different one.
+   *
+   * `loadedScript` is a plain `let` so writing it cannot re-trigger this effect,
+   * and it doubles as the stale-response guard when the route moves on mid-flight.
+   */
+  let loadedScript: string | null = null;
+  $effect(() => {
+    const name = selectedScript;
+    if (name === loadedScript) return;
+    loadedScript = name;
+    editing = false;
+    if (!name) { scriptContent = ''; return; }
+    void fetchScript(name);
+  });
+
+  // Kept callable separately from the effect: the Cancel button needs a re-fetch
+  // *without* a route change, which the loadedScript guard would swallow.
+  async function fetchScript(name: string) {
     try {
-      selectedScript = name;
-      editing = false;
       const res = await api.getScript(name);
+      if (loadedScript !== name) return; // the route moved on
       if (res.binary) {
         scriptContent = '(Binary file — cannot display)';
       } else {
@@ -111,7 +132,8 @@
     try {
       await api.deleteScript(name);
       if (selectedScript === name) {
-        selectedScript = null;
+        // replace: the deleted script's URL must not survive in the back stack.
+        navigate({ page: 'scripts' }, { replace: true });
         scriptContent = '';
       }
       showToast('Script deleted', 'success');
@@ -253,7 +275,7 @@
         </div>
         <div style="display: flex; gap: 8px;">
           {#if editing}
-            <Button variant="ghost" size="sm" onclick={() => { editing = false; selectScript(selectedScript!); }}>Cancel</Button>
+            <Button variant="ghost" size="sm" onclick={() => { editing = false; fetchScript(selectedScript!); }}>Cancel</Button>
             <Button variant="filled" size="sm" icon="save" onclick={saveScript}>Save</Button>
           {:else}
             <Button variant="outline" size="sm" icon="edit" onclick={() => (editing = true)}>Edit</Button>

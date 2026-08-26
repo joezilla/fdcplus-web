@@ -19,21 +19,46 @@
   import '$lib/services/socket';
   // Initialize theme store (side effect: applies <html data-theme>)
   import '$lib/stores/theme';
-
-  type PageId = 'terminal' | 'disks' | 'drives' | 'clients' | 'cassettes' | 'catalog' | 'profiles' | 'machines' | 'scripts' | 'config';
+  // Route store (side effect on import: parses location.hash, canonicalizes it,
+  // and starts listening for Back/Forward). Imported at module scope, so the
+  // deep link is captured before AuthGate finishes probing and before any page
+  // mounts — it is simply applied late.
+  import { route, navigate, type PageId } from '$lib/stores/route';
+  import { anyDirty } from '$lib/stores/configDirty';
 
   function isNarrowNow(): boolean {
     return typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches;
   }
 
-  let currentPage: PageId = $state('terminal');
+  const currentPage = $derived($route.page);
   let sidebarOpen = $state(!isNarrowNow());
   let chatOpen = $state(false);
 
   function navigateTo(page: PageId): void {
-    currentPage = page;
-    if (isNarrowNow()) sidebarOpen = false;
+    navigate({ page });
   }
+
+  // Close the mobile drawer on ANY page change — including Back/Forward and a
+  // cold deep link, which navigateTo() never sees. (This used to live inside
+  // navigateTo, so it only fired for in-app clicks.)
+  $effect(() => {
+    $route.page;
+    if (isNarrowNow()) sidebarOpen = false;
+  });
+
+  // Warn before losing unsaved Config edits. This covers reload, tab close and
+  // typing a new URL — but NOT the in-app Back button: `popstate` is not
+  // cancellable, so leaving a dirty Config page via Back still discards edits
+  // silently. The only workaround (a sentinel history entry re-pushed on
+  // popstate) breaks Forward and confuses screen readers, so it is deliberately
+  // not done here.
+  $effect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (anyDirty()) e.preventDefault();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  });
 </script>
 
 <AuthGate>
@@ -104,7 +129,7 @@
       {:else if currentPage === 'catalog'}
         <CatalogPage />
       {:else if currentPage === 'profiles'}
-        <ProfilesPage onNavigate={navigateTo} />
+        <ProfilesPage />
       {:else if currentPage === 'machines'}
         <MachinesPage onNavigate={navigateTo} />
       {:else if currentPage === 'scripts'}
